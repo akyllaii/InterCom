@@ -44,17 +44,16 @@ parser.add_argument("-a", "--destination_address", type=int_or_str, default="loc
 parser.add_argument("-p", "--destination_port", type=int, default=4444, help="Destination (interlocutor's listing-) port")
 parser.add_argument("-f", "--filename", type=str, help="Use a wav/oga/... file instead of the mic data")
 parser.add_argument("-t", "--reading_time", type=int, help="Time reading data (mic or file) (only with effect if --show_stats or --show_data is used)")
+parser.add_argument("-n", "--number_of_channels", type=int, default=2, help="Number of channels") # Notice that, currently, in OSX systems, the number of channels must be 1.
 
 class Minimal:
     # Some default values:
     MAX_PAYLOAD_BYTES = 32768 # The maximum UDP packet's payload.
     #SAMPLE_TYPE = np.int16    # The number of bits per sample.
-    NUMBER_OF_CHANNELS = 2    # The number of channels. Currently, in OSX systems NUMBER_OF_CHANNELS must be 1.
 
     def __init__(self):
         ''' Constructor. Basically initializes the sockets stuff. '''
         logging.info(__doc__)
-        logging.info(f"NUMBER_OF_CHANNELS = {self.NUMBER_OF_CHANNELS}")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.listening_endpoint = ("0.0.0.0", args.listening_port)
         self.sock.bind(self.listening_endpoint)
@@ -83,9 +82,9 @@ class Minimal:
         # We need to reshape packed_chunk, that comes as sequence of
         # bytes, as a NumPy array.
         chunk = np.frombuffer(packed_chunk, np.int16)
-        chunk = chunk.reshape(args.frames_per_chunk, self.NUMBER_OF_CHANNELS)
+        chunk = chunk.reshape(args.frames_per_chunk, args.number_of_channels)
         return chunk
-    
+
     def send(self, packed_chunk):
         '''Sends an UDP packet.'''
         try:
@@ -106,7 +105,7 @@ class Minimal:
         chunk is not available.
 
         '''
-        return np.zeros((args.frames_per_chunk, self.NUMBER_OF_CHANNELS), np.int16)
+        return np.zeros((args.frames_per_chunk, args.number_of_channels), np.int16)
 
     def _record_IO_and_play(self, ADC, DAC, frames, time, status):
         '''Interruption handler that samples a chunk, builds a packet with the
@@ -140,19 +139,24 @@ class Minimal:
             during the last call to the callbak function.
 
         '''
+        # (1) record() implicit
+        # (2) pack()
         if __debug__:
             data = ADC.copy()
             packed_chunk = self.pack(data)
         else:
             packed_chunk = self.pack(ADC)
+        # (3) send()
         self.send(packed_chunk)
+        # (4) receive() and (5) unpack()
         try:
             packed_chunk = self.receive()
             chunk = self.unpack(packed_chunk)
         except (socket.timeout, BlockingIOError):
-            #chunk = np.zeros((args.frames_per_chunk, self.NUMBER_OF_CHANNELS), self.SAMPLE_TYPE)
+            #chunk = np.zeros((args.frames_per_chunk, args.number_of_channels), self.SAMPLE_TYPE)
             chunk = self.zero_chunk
             logging.debug("playing zero chunk")
+        # (6) play()
         DAC[:] = chunk
         if __debug__:
             #if not np.array_equal(ADC, DAC):
@@ -169,7 +173,7 @@ class Minimal:
             return self.zero_chunk
         chunk = np.frombuffer(chunk, dtype=np.int16)
         #try:
-        chunk = np.reshape(chunk, (args.frames_per_chunk, self.NUMBER_OF_CHANNELS))
+        chunk = np.reshape(chunk, (args.frames_per_chunk, args.number_of_channels))
         #except ValueError:
             #logging.warning("Input exhausted! :-/")
             #pid = os.getpid()
@@ -207,7 +211,7 @@ class Minimal:
                          dtype=np.int16,
                          samplerate=args.frames_per_second,
                          blocksize=args.frames_per_chunk,
-                         channels=self.NUMBER_OF_CHANNELS,
+                         channels=args.number_of_channels,
                          callback=callback_function)
 
     def file_stream(self, callback_function):
@@ -223,7 +227,7 @@ class Minimal:
             samplerate=args.frames_per_second,
             blocksize=args.frames_per_chunk,
             device=args.output_device,
-            channels=self.NUMBER_OF_CHANNELS,
+            channels=args.number_of_channels,
             callback=callback_function)
 
     def run(self):
@@ -246,6 +250,9 @@ parser.add_argument("--show_samples", action="store_true", help="Shows samples v
 parser.add_argument("--show_spectrum", action="store_true", help="Shows Fourier spectrum")
 
 import threading
+import pygame  # If fails opening iris and swrast, run "export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6" (good idea to put it into .bashrc)
+import pygame_widgets
+#import spectrum # If fails (DOLPHINS.WAV not found), update setuptools with "pip install setuptools"
 
 class Minimal__verbose(Minimal):
     ''' Verbose version of Minimal.
@@ -261,11 +268,12 @@ class Minimal__verbose(Minimal):
 
     seconds_per_cycle = 1
     
-    def __init__(self, args):
+    #def __init__(self, args):
+    def __init__(self):
         ''' Defines the stuff for providing running information. '''
         super().__init__()
 
-        self.args = args
+        #self.args = args
 
         self.cycle = 1 # An infinite cycle's counter.
 
@@ -304,15 +312,21 @@ class Minimal__verbose(Minimal):
         #self.q = queue.Queue()
 
         if args.show_spectrum:
+            self.recorded_chunk = self.generate_zero_chunk()
+            self.played_chunk = self.generate_zero_chunk()
             # PyGame stuff
-            self.window_heigh = 513
+            self.eye_size = args.frames_per_chunk//2
+            self.window_heigh = self.eye_size + 1
             pygame.init()
             self.display = pygame.display.set_mode((args.frames_per_chunk//2, self.window_heigh))
             self.display.fill((0, 0, 0))
             self.surface = pygame.surface.Surface((args.frames_per_chunk//2, self.window_heigh)).convert()
             self.RGB_matrix = np.zeros((self.window_heigh, args.frames_per_chunk//2, 3), dtype=np.uint8)
-            self.eye = 255*np.eye(args.frames_per_chunk//2, dtype=int)
-            self.hamming_window = spectrum.window.Window(args.frames_per_chunk, "hamming").data
+            #self.RGB_matrix = np.zeros((self.window_heigh, 512, 3), dtype=np.uint8)
+            #self.eye = 255*np.eye(512, dtype=int)
+            self.eye = 255*np.eye(self.eye_size, dtype=int)
+            #self.hamming_window = spectrum.window.Window(args.frames_per_chunk, "hamming").data
+            self.hamming_window = np.hamming(args.frames_per_chunk)
 
     def update_display(self):
         events = pygame.event.get()
@@ -320,24 +334,46 @@ class Minimal__verbose(Minimal):
             if event.type == pygame.QUIT:
                 done = True
                 break
-        le_channel = self.recorded_chunk[:, 0]
-        ri_channel = self.recorded_chunk[:, 1]
-        le_windowed_channel = le_channel * self.hamming_window
-        ri_windowed_channel = ri_channel * self.hamming_window
-        le_FFT = np.fft.rfft(le_windowed_channel)
-        ri_FFT = np.fft.rfft(ri_windowed_channel)
+        le_channel_rec = self.recorded_chunk[:, 0]
+        ri_channel_rec = self.recorded_chunk[:, 1]
+        le_channel_pla = self.played_chunk[:, 0]
+        ri_channel_pla = self.played_chunk[:, 1]
+        le_windowed_channel_rec = le_channel_rec * self.hamming_window
+        ri_windowed_channel_rec = ri_channel_rec * self.hamming_window
+        le_windowed_channel_pla = le_channel_pla * self.hamming_window
+        ri_windowed_channel_pla = ri_channel_pla * self.hamming_window
+        le_FFT_rec = np.fft.rfft(le_windowed_channel_rec)
+        ri_FFT_rec = np.fft.rfft(ri_windowed_channel_rec)
+        le_FFT_pla = np.fft.rfft(le_windowed_channel_pla)
+        ri_FFT_pla = np.fft.rfft(ri_windowed_channel_pla)
         #le_spectrum = 100*np.log10(np.sqrt(le_FFT.real*le_FFT.real + le_FFT.imag*le_FFT.imag) / args.frames_per_chunk + 1)
         #ri_spectrum = 100*np.log10(np.sqrt(ri_FFT.real*ri_FFT.real + ri_FFT.imag*ri_FFT.imag) / args.frames_per_chunk + 1)
-        le_spectrum = np.sqrt(le_FFT.real*le_FFT.real + le_FFT.imag*le_FFT.imag) / args.frames_per_chunk + 1
-        ri_spectrum = np.sqrt(ri_FFT.real*ri_FFT.real + ri_FFT.imag*ri_FFT.imag) / args.frames_per_chunk + 1
-        le_spectrum = le_spectrum.astype(np.uint16)
-        ri_spectrum = ri_spectrum.astype(np.uint16)
+        le_spectrum_rec = np.sqrt(le_FFT_rec.real*le_FFT_rec.real + le_FFT_rec.imag*le_FFT_rec.imag) / args.frames_per_chunk + 1
+        ri_spectrum_rec = np.sqrt(ri_FFT_rec.real*ri_FFT_rec.real + ri_FFT_rec.imag*ri_FFT_rec.imag) / args.frames_per_chunk + 1
+        le_spectrum_pla = np.sqrt(le_FFT_pla.real*le_FFT_pla.real + le_FFT_pla.imag*le_FFT_pla.imag) / args.frames_per_chunk + 1
+        ri_spectrum_pla = np.sqrt(ri_FFT_pla.real*ri_FFT_pla.real + ri_FFT_pla.imag*ri_FFT_pla.imag) / args.frames_per_chunk + 1
+        le_spectrum_rec = le_spectrum_rec.astype(np.uint16)
+        ri_spectrum_rec = ri_spectrum_rec.astype(np.uint16)
+        le_spectrum_pla = le_spectrum_pla.astype(np.uint16)
+        ri_spectrum_pla = ri_spectrum_pla.astype(np.uint16)
         #R_matrix = self.eye[(self.recorded_chunk[::4, 0]>>8) + 128]
         #G_matrix = self.eye[(self.recorded_chunk[::4, 1]>>8) + 128]
-        R_matrix = self.eye[np.clip(511 - le_spectrum, 0, 511)]
-        G_matrix = self.eye[np.clip(511 - ri_spectrum, 0, 511)]            
+        #R_matrix = self.eye[np.clip(511 - le_spectrum, 0, 511)]
+        #G_matrix = self.eye[np.clip(511 - ri_spectrum, 0, 511)]
+        #R_matrix = self.eye[np.clip(self.eye_size-1 - le_spectrum, 0, self.eye_size-1)]
+        #G_matrix = self.eye[np.clip(self.eye_size-1 - ri_spectrum, 0, self.eye_size-1)]
+        le_spectrum_rec = np.clip(self.eye_size - le_spectrum_rec, 0, self.eye_size-1)
+        ri_spectrum_rec = np.clip(self.eye_size - ri_spectrum_rec, 0, self.eye_size-1)
+        le_spectrum_pla = np.clip(le_spectrum_pla, 0, self.eye_size-1)
+        ri_spectrum_pla = np.clip(ri_spectrum_pla, 0, self.eye_size-1)
+        R_matrix = self.eye[le_spectrum_rec]
+        G_matrix = self.eye[ri_spectrum_rec]
+        R_matrix += self.eye[le_spectrum_pla]
+        G_matrix += self.eye[ri_spectrum_pla]
         self.RGB_matrix[:, :, 0] = R_matrix
         self.RGB_matrix[:, :, 1] = G_matrix
+        #self.RGB_matrix[0:R_matrix.shape[0], 0:R_matrix.shape[1], 0] = R_matrix
+        #self.RGB_matrix[0:G_matrix.shape[0], 0:G_matrix.shape[1], 0] = G_matrix
         surface = pygame.surfarray.make_surface(self.RGB_matrix)
         #surf = pygame.surfarray.blit_array(self.surface, self.recorded_chunk[:,0])
         #for i in range(256):
@@ -351,7 +387,7 @@ class Minimal__verbose(Minimal):
     def send(self, packed_chunk):
         ''' Computes the number of sent bytes and the number of sent packets. '''
         super().send(packed_chunk)
-        #self.sent_bytes_count += len(packed_chunk)*np.dtype(self.SAMPLE_TYPE).itemsize*self.NUMBER_OF_CHANNELS
+        #self.sent_bytes_count += len(packed_chunk)*np.dtype(self.SAMPLE_TYPE).itemsize*args.number_of_channels
         self.sent_bytes_count += packed_chunk.nbytes  # Returns the number of bytes of the numpy array packed_chunk
         self.sent_messages_count += 1
 
@@ -510,6 +546,11 @@ class Minimal__verbose(Minimal):
         self.show_data(played_chunk)
         print("\033[m")
 
+    def __unpack(self, packed_chunk):
+        chunk = super().unpack(packed_chunk)
+        self.played_chunk = chunk
+        return chunk
+
     def _record_IO_and_play(self, ADC, DAC, frames, time, status):
         # Notice that in each call to this method, a (different) chunk is processed.
 
@@ -523,6 +564,7 @@ class Minimal__verbose(Minimal):
 
         #self.q.put(DAC[:128])
         self.recorded_chunk = ADC
+        self.played_chunk = DAC
         #print(".")
 
     def _read_IO_and_play(self, DAC, frames, time, status):
@@ -533,6 +575,7 @@ class Minimal__verbose(Minimal):
             self.show_played_chunk(DAC)
 
         self.recorded_chunk = DAC
+        self.played_chunk = DAC
 
     def loop_update_display(self):
         while True:
@@ -552,7 +595,8 @@ class Minimal__verbose(Minimal):
         self.print_header()
         with self.stream(self._handler):
             cycle_feedback_thread.start()
-            if self.args.show_spectrum:
+            #if self.args.show_spectrum:
+            if args.show_spectrum:
                 self.loop_update_display()
             else:
                 input()
@@ -576,12 +620,8 @@ if __name__ == "__main__":
         quit()
 
     if args.show_stats or args.show_samples or args.show_spectrum:
-        if args.show_spectrum:
-            import pygame  # If fails opening iris and swrast, run "export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6" (good idea to put it into .bashrc)
-            import pygame_widgets
-            import spectrum # If fails (DOLPHINS.WAV not found), update setuptools with "pip install setuptools"
-
-        intercom = Minimal__verbose(args)
+        #intercom = Minimal__verbose(args)
+        intercom = Minimal__verbose()
     else:
         intercom = Minimal()
 

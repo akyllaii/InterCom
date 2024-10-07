@@ -60,7 +60,7 @@ class Buffering(minimal.Minimal):
         chunk = packed_chunk[2:]
         # Notice that struct.calcsize('H') = 2
         chunk = np.frombuffer(chunk, dtype=np.int16)
-        #chunk = chunk.reshape(minimal.args.frames_per_chunk, self.NUMBER_OF_CHANNELS)
+        #chunk = chunk.reshape(minimal.args.frames_per_chunk, minimal.args.number_of_channels)
         return chunk_number, chunk
 
     def buffer_chunk(self, chunk_number, chunk):
@@ -72,7 +72,7 @@ class Buffering(minimal.Minimal):
 
     def play_chunk(self, DAC, chunk):
         self.played_chunk_number = (self.played_chunk_number + 1) % self.cells_in_buffer
-        chunk = chunk.reshape(minimal.args.frames_per_chunk, self.NUMBER_OF_CHANNELS)
+        chunk = chunk.reshape(minimal.args.frames_per_chunk, minimal.args.number_of_channels)
         DAC[:] = chunk
 
     def receive(self):
@@ -125,6 +125,9 @@ class Buffering__verbose(Buffering, minimal.Minimal__verbose):
     
     def __init__(self):
         super().__init__()
+        #self.args = args
+        #Buffering.__init__(self)
+        #Minimal__verbose.__init__(self, args)
 
     def send(self, packed_chunk):
         '''Computes the number of sent bytes and the number of sent
@@ -151,6 +154,7 @@ class Buffering__verbose(Buffering, minimal.Minimal__verbose):
             self.show_played_chunk(DAC)
 
         self.recorded_chunk = DAC
+        self.played_chunk = ADC
         #self.recorded_chunk[512:,:]=20000 # <--------------------------------------------
 
     def _read_IO_and_play(self, DAC, frames, time, status):
@@ -169,9 +173,13 @@ class Buffering__verbose(Buffering, minimal.Minimal__verbose):
         if __debug__:
             print("first_received_chunk_number =", first_received_chunk_number)
         self.played_chunk_number = (first_received_chunk_number - self.chunks_to_buffer) % self.cells_in_buffer
-        while self.total_number_of_sent_chunks < self.chunks_to_sent:# and not self.input_exhausted:
-            self.receive_and_buffer()
-            self.update_display() # PyGame cannot run in a thread :-/
+        if minimal.args.show_spectrum:
+            while self.total_number_of_sent_chunks < self.chunks_to_sent:# and not self.input_exhausted:
+                self.receive_and_buffer()
+                self.update_display() # PyGame cannot run in a thread :-/
+        else:
+            while self.total_number_of_sent_chunks < self.chunks_to_sent:# and not self.input_exhausted:
+                self.receive_and_buffer()
 
     def run(self):
         cycle_feedback_thread = threading.Thread(target=self.loop_cycle_feedback)
@@ -203,7 +211,8 @@ if __name__ == "__main__":
         print(sd.query_devices())
         quit()
 
-    if minimal.args.show_stats or minimal.args.show_samples:
+    if minimal.args.show_stats or minimal.args.show_samples or minimal.args.show_spectrum:
+        #intercom = Buffering__verbose(minimal.args)
         intercom = Buffering__verbose()
     else:
         intercom = Buffering()
